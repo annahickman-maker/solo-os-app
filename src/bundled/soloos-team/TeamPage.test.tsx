@@ -177,6 +177,7 @@ describe("TeamPage", () => {
     expect(agents.create).toHaveBeenCalledWith({
       type: CLAUDE_TYPE,
       name: "Manager",
+      picture: `${ORIGIN}/v1/portrait/manager`,
       config: { instructions: "# MANAGER" },
     });
     expect(

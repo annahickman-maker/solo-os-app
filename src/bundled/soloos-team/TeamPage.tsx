@@ -29,6 +29,7 @@ import {
   type KeyStore,
   noHarnessMessage,
   parseAccessLink,
+  portraitUrl,
   type Request,
   unlock,
   unlockMessage,
@@ -183,7 +184,12 @@ export function TeamPage({
     setHiring(employee.id);
     setNotice(undefined);
     try {
-      await hire(agents, card, chosen.key);
+      await hire(
+        agents,
+        card,
+        chosen.key,
+        employee.portrait ? portraitUrl(origin, employee.id) : undefined,
+      );
       setNotice({
         tone: "success",
         text: `${card.name} is on your team. Find them in your agents and say hello.`,

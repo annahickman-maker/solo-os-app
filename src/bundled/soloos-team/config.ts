@@ -6,10 +6,11 @@
 // origins its manifest declares (index.test.ts checks they match).
 
 /** The team server (solo-os-team-server), with no trailing slash. */
-export const SOLO_OS_TEAM_ORIGIN = "https://solo-os-team.annahickman-maker.workers.dev";
+export const SOLO_OS_TEAM_ORIGIN =
+  "https://solo-os-team.annahickman-maker.workers.dev";
 
 /** Where the footer's "Back to the course" link goes. */
-export const SOLO_OS_COURSE_URL = "https://course.example.com";
+export const SOLO_OS_COURSE_URL = "https://www.skool.com/independent-creator-3377/classroom";
 
 export const TEAM_COPY = {
   title: "Team",

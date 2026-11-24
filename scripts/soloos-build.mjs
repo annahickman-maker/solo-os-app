@@ -9,7 +9,7 @@
 // Run it with Node 24. On a Mac that is bin/node, and Rust comes from bin/
 // too; on Windows, Node and Rust are installed first (README.md).
 //
-// The app lands in target/debug/bundle/macos/Solo OS.app on a Mac, and as an
+// The app lands in target/debug/bundle/macos/Solo Command Centre.app on a Mac, and as an
 // installer in target\debug\bundle\nsis on Windows. It is a debug build, as
 // every Solo OS build is: it is made on the computer that runs it, and is
 // signed for that computer only.
@@ -74,7 +74,7 @@ const platformConfig = mac
 const windowsList = (
   read(platformConfig).app?.windows ??
   read("src-tauri/tauri.conf.json").app.windows
-).map((window) => ({ ...window, title: "Solo OS" }));
+).map((window) => ({ ...window, title: "Solo Command Centre" }));
 // A file, not a JSON argument, so no shell has to quote it.
 mkdirSync(tools, { recursive: true });
 const titled = join(tools, "window-title.conf.json");

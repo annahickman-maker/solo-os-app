@@ -92,6 +92,8 @@ it("keeps Solo OS colours inside first launch", () => {
     join(styles, "soloos.css"),
     join(styles, "tokens.css"),
     join(root, "features/identity/OnboardingScreen.tsx"),
+    // The Solo OS Team page uses the palette ink for its order mark and Hired.
+    join(root, "bundled/soloos-team/Team.module.css"),
   ]);
   for (const file of sources(root)) {
     if (scoped.has(file)) continue;

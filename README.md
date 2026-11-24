@@ -1,6 +1,6 @@
 # Set up Solo OS on this computer
 
-**For the coding agent receiving this GitHub link.** The person in front of you is a Solo OS member setting up their own private Solo OS workspace, running entirely on their own computer: the app's source code, the workspace itself, and a key that only their computer holds. Nothing is rented and no domain is needed. They may never have used a terminal. You are their guide for the whole setup.
+**For the coding agent receiving this GitHub link.** The person in front of you is a Solo OS member setting up their own private Solo OS workspace, running entirely on their own computer: the app's source code, the workspace itself, and a key that only their computer holds. Nothing is rented and no domain is needed. They may never have used a terminal. You are their guide for the whole setup. The desktop app is called **Solo Command Centre**; Solo OS is the whole system, including the dashboard in their browser.
 
 This is the place to start. A workspace set up this way is reachable from this computer only. If they are joining a workspace someone else set up, skip to **Joining with an invite**.
 
@@ -93,10 +93,10 @@ bin/node scripts/soloos-local/setup.mjs
 
 ## Step 3 of 6 · Create the owner's key
 
-When the build finishes, install the app. If Applications already contains `Solo OS.app`, check its identifier is `com.soloos.app` (`mdls -name kMDItemCFBundleIdentifier "/Applications/Solo OS.app"`) and move the old bundle aside first. Use the user's own Applications folder (`~/Applications`) if the system one needs an administrator.
+When the build finishes, install the app. If Applications already contains `Solo Command Centre.app`, check its identifier is `com.soloos.app` (`mdls -name kMDItemCFBundleIdentifier "/Applications/Solo Command Centre.app"`) and move the old bundle aside first. Use the user's own Applications folder (`~/Applications`) if the system one needs an administrator.
 
 ```sh
-app="Solo OS.app"
+app="Solo Command Centre.app"
 bundle="target/debug/bundle/macos/$app"
 codesign --verify --deep --strict "$bundle" &&
   ditto "$bundle" "/Applications/$app" &&
@@ -105,7 +105,7 @@ codesign --verify --deep --strict "$bundle" &&
 
 **On Windows:** the build leaves one installer in `target\debug\bundle\nsis`. Start it for them with `Start-Process (Get-ChildItem target\debug\bundle\nsis\*.exe).FullName`. The app was built on their own computer and carries no publisher's signature, so Windows may show **Windows protected your PC**: they choose **More info**, then **Run anyway**. The app is then in the Start menu as **Solo OS**.
 
-Solo OS is a separate app from Buzz: it keeps its own key, agents and settings, so it never shares them with a Buzz app on the same computer.
+Solo Command Centre is a separate app from Buzz: it keeps its own key, agents and settings, so it never shares them with a Buzz app on the same computer.
 
 Tell them where the icon is and let them open it. The first time, macOS may say the app was downloaded or is from an unidentified developer; it was built on this Mac, so they choose **Open** (or **System Settings, Privacy & Security, Open Anyway**). They choose **Set up my workspace**, then **Create my key**. The next screen shows a code with a **Copy** button. Ask them to paste it to you. It is their public key and starts with `npub1`. Their private key is never shown: it stays in their Mac's Keychain, or in Windows Credential Manager.
 
@@ -158,7 +158,7 @@ When the Solo OS Manager has answered its first message, the setup is finished. 
 
 **On Windows:** Claude and Codex are not available, so the Manager cannot run there yet. They can hire **Goose** or **Pi** employees instead: Goose is included and needs a model provider's key in **Settings, Agent setup, Harness defaults, Goose**; Pi needs Node.js 22.19 or later and is turned on in **Settings, Plugins** first.
 
-Agents run on this computer while Solo OS is open. They work in `~/.buzz` by default and can run commands and edit files there.
+Agents run on this computer while Solo Command Centre is open. They work in `~/.buzz` by default and can run commands and edit files there.
 
 ## Keeping it running
 
@@ -342,7 +342,7 @@ Open by telling them the plan: you check whether there is anything newer, make a
 6. **Put the new app in place.** When the build finishes, check it, move the installed app aside and copy the new one in. The old app goes into their backups folder, so they can go back. They can leave the app open while you do this.
 
    ```sh
-   app="Solo OS.app"
+   app="Solo Command Centre.app"
    bundle="target/debug/bundle/macos/$app"
    installed="/Applications/$app"
    [ -d "$installed" ] || installed="$HOME/Applications/$app"
@@ -356,7 +356,7 @@ Open by telling them the plan: you check whether there is anything newer, make a
 
    **On Windows:** have them close the app first, then run the new installer from `target\debug\bundle\nsis` as in step 3 of the setup. It installs over the old one.
 
-7. **They restart the app.** Ask them to quit Solo OS and open it again from Applications straight away. **If you are running inside the app,** say this first, because quitting stops you: "When you quit the app I will stop mid-sentence. That is expected, and the update is already installed. Open the app again and say hello to me."
+7. **They restart the app.** Ask them to quit Solo Command Centre and open it again from Applications straight away. **If you are running inside the app,** say this first, because quitting stops you: "When you quit the app I will stop mid-sentence. That is expected, and the update is already installed. Open the app again and say hello to me."
 8. **Check it came back.** When they are back in:
    - If macOS asked whether the app may use something saved in their keychain, they enter their Mac password and choose **Always Allow**.
    - If the app opens on its welcome screen instead of their workspace, they choose **Set up my workspace**, then **Use an existing key**, paste their recovery copy into the app (never into this chat), and connect to the same address as before.
@@ -368,7 +368,7 @@ If the new app will not open or cannot reach the workspace, put the old one back
 
 ## Joining with an invite
 
-Build and install the app as in steps 1 and 3; Docker is not needed to join someone else's workspace. The person opens Solo OS, chooses **I have an invite**, pastes the invite link they were sent and chooses **Create my identity**, or **Use an existing key** if they already have one. Keep invites and recovery copies out of the chat. They save a recovery copy of their key from **Settings, Identity** as in step 5.
+Build and install the app as in steps 1 and 3; Docker is not needed to join someone else's workspace. The person opens Solo Command Centre, chooses **I have an invite**, pastes the invite link they were sent and chooses **Create my identity**, or **Use an existing key** if they already have one. Keep invites and recovery copies out of the chat. They save a recovery copy of their key from **Settings, Identity** as in step 5.
 
 ## Phones and teammates
 

@@ -333,12 +333,19 @@ export class HireError extends Error {
 
 export type HireAgents = Pick<Agents, "types" | "create" | "snapshot">;
 
-/** Creates the card's agent, with its exact name and instructions, in the
- * selected community as `typeKey`. */
+/** The team server's image of an employee's portrait: an HTTPS URL, which is
+ * the only kind of picture an agent can have. */
+export function portraitUrl(origin: string, employeeId: string): string {
+  return `${origin}/v1/portrait/${encodeURIComponent(employeeId)}`;
+}
+
+/** Creates the card's agent, with its exact name, instructions and picture,
+ * in the selected community as `typeKey`. */
 export async function hire(
   agents: HireAgents,
   card: Card,
   typeKey: string,
+  picture?: string,
 ): Promise<Agent> {
   const snapshot = agents.snapshot();
   if (snapshot.status !== "ready")
@@ -359,7 +366,12 @@ export async function hire(
     kind.defaults().config,
   );
   try {
-    return await agents.create({ type: typeKey, name: card.name, config });
+    return await agents.create({
+      type: typeKey,
+      name: card.name,
+      ...(picture && { picture }),
+      config,
+    });
   } catch (error) {
     const detail =
       error instanceof Error && error.message ? ` (${error.message})` : "";
@@ -371,4 +383,4 @@ export async function hire(
 }
 
 export const noHarnessMessage =
-  "To hire, turn on Claude: open Settings, then Plugins, and turn on Claude. Then sign in with your Claude account when Solo OS asks, and come back here.";
+  "To hire, turn on Claude: open Settings, then Plugins, and turn on Claude. Then sign in with your Claude account when Solo Command Centre asks, and come back here.";

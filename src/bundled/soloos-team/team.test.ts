@@ -15,6 +15,7 @@ import {
   KeyStore,
   parseAccessLink,
   parseRoster,
+  portraitUrl,
   STORAGE_KEY,
   unlock,
 } from "./team";
@@ -303,6 +304,14 @@ describe("hire", () => {
       name: "Manager",
       config: { model: "", instructions: card.instructions },
     });
+  });
+
+  it("gives the agent the employee's portrait as its picture", async () => {
+    const { service, create } = fakeAgents();
+    const picture = portraitUrl("https://team.example.com", "manager");
+    await hire(service, card, CLAUDE_TYPE, picture);
+    expect(picture).toBe("https://team.example.com/v1/portrait/manager");
+    expect(create.mock.calls[0]?.[0]).toMatchObject({ picture });
   });
 
   it("can hire as Codex", async () => {

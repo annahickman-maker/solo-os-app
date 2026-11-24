@@ -1297,7 +1297,7 @@ export function Welcome({
               ref={focusCommunityHeading}
               className="text-heading text-standard"
             >
-              Welcome to Solo OS
+              Welcome to Solo Command Centre
             </h1>
             <p className="mt-2 text-body text-subtle">
               Are you starting a new workspace, or joining one you were invited
