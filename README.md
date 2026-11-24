@@ -141,9 +141,9 @@ They now own a working workspace and can hire their first AI employee.
 
 ## Step 6 of 6 · Hire the Solo OS Manager
 
-The Solo OS Manager is their first AI employee: it runs on Claude Code (agent type `buzz.claude-code/claude-code`) and helps them set up everything else in Solo OS. They hire it on the **Team** page in the app, with the access link from the Manager's lesson in their Solo OS course. Ask them to have that link ready; it starts `https://solo-os-team.` and they paste it into the app, never into this chat.
+The Solo OS Manager is their first AI employee: it runs on Claude (agent type `buzz.claude-code/claude-code`) or Codex (`buzz.codex/codex`), whichever they already pay for, and helps them set up everything else in Solo OS. They hire it on the **Team** page in the app, with the access link from the Manager's lesson in their Solo OS course. Ask them to have that link ready; it starts `https://solo-os-team.` and they paste it into the app, never into this chat.
 
-**First, the harness.** An AI employee needs a harness, the AI tool it runs on. The Manager uses **Claude**, on the Claude subscription they already pay for. **Codex** (ChatGPT) works for other employees. In the app they open **Settings, Agent setup, Harness defaults** and pick **Claude**. Two buttons then appear beside it, one after the other:
+**First, the harness.** An AI employee needs a harness, the AI tool it runs on. Employees use **Claude** (a Claude Pro or Max plan) or **Codex** (a ChatGPT plan that includes Codex), on the subscription they already pay for. Ask which they have. In the app they open **Settings, Agent setup, Harness defaults** and pick **Claude** or **Codex**. Two buttons then appear beside it, one after the other:
 
 1. **Install integration** downloads the app's own copy of Claude Code (about 250 MB, once).
 2. **Sign in** opens Claude's own sign-in page in their browser, where they sign in themselves with the account that has their subscription. If this computer is already signed in to Claude Code, this button never appears and they carry straight on.
