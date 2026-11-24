@@ -1,0 +1,352 @@
+import { byteSize } from "./budget";
+import type { SidebarPreferences } from "./sidebar-preferences";
+/** Device-local resume data, never proof of current access or permission to write. */
+export type SavedStartup = {
+  discovery?: {
+    savedAt: number;
+    relayAuthor: string;
+    events: unknown[];
+  };
+  /** The verified-profile authority last observed, `null` once disabled, so
+   * a cached session can show saved verified names before discovery. */
+  verifiedProfiles?: unknown;
+  preferences?: { savedAt: number; data: SidebarPreferences };
+};
+/** Signed wire records only. The owner re-verifies before displaying cached history.
+ * A cache hit is never authority for current membership or freshness. No keys/tokens are persisted. */
+export type SavedHead = {
+  channelId: string;
+  savedAt: number;
+  events: unknown[];
+  /** Membership notices among the events, read apart from them. */
+  notices?: unknown[];
+  profiles: unknown[];
+};
+export interface HeadPersistence {
+  read(): Promise<SavedHead[]>;
+  readStartup?(): Promise<SavedStartup | undefined>;
+  writeStartup?(patch: SavedStartup): Promise<void>;
+  /** Signed kind 0 and verified-profile (30382) events mirrored from the profile directory. */
+  readProfiles?(): Promise<unknown[]>;
+  writeProfiles?(events: readonly unknown[]): Promise<void>;
+  write(head: SavedHead): Promise<void>;
+  remove(channelId: string): Promise<void>;
+  retain(channelIds: readonly string[]): Promise<void>;
+  clear(): Promise<void>;
+  close(): void;
+}
+const DB = "buzz-channel-heads-v1";
+const STORE = "heads";
+const STARTUP = "startup";
+const MIRROR = ":profiles";
+const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_HEADS = 64;
+const MAX_AGE = 24 * 60 * 60 * 1000;
+type HeadMeta = { key: string; bytes: number; savedAt: number };
+type Record = SavedHead & HeadMeta & { scope: string };
+type ScopedRow = Pick<Record, "scope" | "channelId"> & { key: IDBValidKey };
+
+// History keys are strings. Array keys let us load the metadata on its own
+// without changing the database version that older builds open.
+const historyKeys = () => IDBKeyRange.upperBound([], true);
+const metadataKeys = () => IDBKeyRange.lowerBound([]);
+
+function putHeadMeta(
+  store: IDBObjectStore,
+  { key, bytes, savedAt, scope, channelId }: Record,
+) {
+  store.put({
+    key: [key],
+    scope,
+    channelId,
+    // Older builds can clear these rows by scope. Their writes expire every
+    // metadata row, so an older same-key write also invalidates the budget.
+    savedAt: Number.NEGATIVE_INFINITY,
+    bytes: 0,
+    head: { key, bytes, savedAt } satisfies HeadMeta,
+  });
+}
+
+function deleteHead(store: IDBObjectStore, key: string) {
+  store.delete(key);
+  store.delete([key]);
+}
+
+export function createHeadPersistence(
+  viewer: string,
+  relay: string,
+): HeadPersistence {
+  const scope = `${viewer}:${relay}`;
+  const profiles = `${scope}${MIRROR}`;
+  let closed = false;
+  let opening: Promise<IDBDatabase> | undefined;
+  function database() {
+    if (closed || typeof indexedDB === "undefined")
+      return Promise.reject(new Error("Cache unavailable"));
+    opening ??= new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(DB, 2);
+      let expired = false;
+      const timeout = setTimeout(() => {
+        expired = true;
+        reject(new Error("Cache open timed out"));
+      }, 1500);
+      request.onupgradeneeded = () => {
+        for (const name of [STORE, STARTUP])
+          if (!request.result.objectStoreNames.contains(name))
+            request.result.createObjectStore(name, { keyPath: "key" });
+      };
+      request.onerror = () => {
+        clearTimeout(timeout);
+        reject(request.error);
+      };
+      request.onblocked = () => {
+        expired = true;
+        clearTimeout(timeout);
+        reject(new Error("Cache blocked"));
+      };
+      request.onsuccess = () => {
+        clearTimeout(timeout);
+        if (closed || expired) {
+          request.result.close();
+          reject(new Error("Cache closed"));
+          return;
+        }
+        request.result.onversionchange = () => request.result.close();
+        resolve(request.result);
+      };
+    });
+    return opening;
+  }
+  /** `handler` must issue follow-up requests synchronously (IDB auto-commits). */
+  type Then = <R>(request: IDBRequest<R>, handler: (result: R) => void) => void;
+  /** Keep the startup store, across identities, within its byte budget.
+   * Optional profile mirrors give way before any saved roster. */
+  function prune(store: IDBObjectStore, then: Then) {
+    then(
+      store.getAll(),
+      (rows: { key: string; bytes: number; savedAt: number }[]) => {
+        const mirror = (row: { key: string }) =>
+          Number(row.key.endsWith(MIRROR));
+        let total = 0;
+        for (const row of rows.sort(
+          (a, b) => mirror(a) - mirror(b) || b.savedAt - a.savedAt,
+        )) {
+          total += row.bytes;
+          if (total > MAX_BYTES) store.delete(row.key);
+        }
+      },
+    );
+  }
+  async function transact<T>(
+    mode: IDBTransactionMode,
+    work: (store: IDBObjectStore, done: (value: T) => void, then: Then) => void,
+    name = STORE,
+  ): Promise<T> {
+    const db = await database();
+    if (closed) throw new Error("Cache closed");
+    return new Promise<T>((resolve, reject) => {
+      const tx = db.transaction(name, mode);
+      let result: T;
+      let ended = false;
+      const timeout = setTimeout(() => {
+        ended = true;
+        try {
+          tx.abort();
+        } catch (error) {
+          // Native completion can precede its queued event. Let that event
+          // settle the operation when the transaction can no longer abort.
+          if (
+            !(
+              error instanceof DOMException &&
+              error.name === "InvalidStateError"
+            )
+          )
+            reject(error);
+        }
+      }, 2000);
+      tx.oncomplete = () => {
+        clearTimeout(timeout);
+        resolve(result);
+      };
+      tx.onabort = tx.onerror = () => {
+        ended = true;
+        clearTimeout(timeout);
+        reject(tx.error ?? new Error("Cache transaction aborted"));
+      };
+      work(
+        tx.objectStore(name),
+        (value) => {
+          result = value;
+        },
+        (request, handler) => {
+          request.onsuccess = () => {
+            if (ended) return;
+            try {
+              handler(request.result);
+            } catch (error) {
+              // WebKit delivers a queued success after a browser-initiated abort.
+              if (
+                !(
+                  error instanceof DOMException &&
+                  error.name === "TransactionInactiveError"
+                )
+              )
+                throw error;
+              ended = true;
+            }
+          };
+        },
+      );
+    });
+  }
+  return {
+    readStartup: () =>
+      transact(
+        "readonly",
+        (store, done, then) => then(store.get(scope), (row) => done(row?.data)),
+        STARTUP,
+      ),
+    writeStartup: (patch) =>
+      transact(
+        "readwrite",
+        (store, done, then) =>
+          then(store.get(scope), (row) => {
+            const data = { ...row?.data, ...patch };
+            const bytes = byteSize(data);
+            if (bytes <= MAX_BYTES) {
+              store.put({ key: scope, data, bytes, savedAt: Date.now() });
+              prune(store, then);
+            }
+            done(undefined);
+          }),
+        STARTUP,
+      ),
+    readProfiles: () =>
+      transact(
+        "readonly",
+        (store, done, then) =>
+          then(store.get(profiles), (row) => done(row?.data ?? [])),
+        STARTUP,
+      ),
+    writeProfiles: (events) =>
+      transact(
+        "readwrite",
+        (store, done, then) => {
+          const bytes = byteSize(events);
+          if (bytes <= MAX_BYTES) {
+            store.put({
+              key: profiles,
+              data: events,
+              bytes,
+              savedAt: Date.now(),
+            });
+            prune(store, then);
+          }
+          done(undefined);
+        },
+        STARTUP,
+      ),
+    read: () =>
+      transact("readonly", (store, done, then) =>
+        then(store.getAll(historyKeys()), (rows: Record[]) =>
+          done(
+            rows
+              .filter(
+                (row) =>
+                  row.scope === scope && Date.now() - row.savedAt < MAX_AGE,
+              )
+              .sort((a, b) => b.savedAt - a.savedAt)
+              .slice(0, MAX_HEADS),
+          ),
+        ),
+      ),
+    write: (head) =>
+      transact("readwrite", (store, done, then) => {
+        const bytes = byteSize(head);
+        if (bytes > MAX_BYTES) {
+          done(undefined);
+          return;
+        }
+        const row: Record = {
+          ...head,
+          scope,
+          key: `${scope}:${head.channelId}`,
+          bytes,
+        };
+        store.put(row);
+        putHeadMeta(store, row);
+        const size = store.count();
+        const pruneHeads = (rows: HeadMeta[]) => {
+          // Global disk budget across identities; scope is still required for every read.
+          let total = 0,
+            count = 0;
+          for (const entry of rows.sort((a, b) => b.savedAt - a.savedAt)) {
+            total += entry.bytes;
+            count++;
+            if (
+              total > MAX_BYTES ||
+              count > MAX_HEADS ||
+              Date.now() - entry.savedAt >= MAX_AGE
+            )
+              deleteHead(store, entry.key);
+          }
+          done(undefined);
+        };
+        const metadata = metadataKeys();
+        then(store.getAll(metadata), (rows: { head: HeadMeta }[]) => {
+          // New writes keep one metadata row per head. An older writer drops
+          // all metadata, and an older point delete can leave an extra row.
+          if (size.result === 2 * rows.length) {
+            pruneHeads(rows.map((row) => row.head));
+            return;
+          }
+          then(store.getAll(historyKeys()), (heads: Record[]) => {
+            store.delete(metadata);
+            for (const head of heads) putHeadMeta(store, head);
+            pruneHeads(heads);
+          });
+        });
+      }),
+    remove: (channelId) =>
+      transact("readwrite", (store, done) => {
+        deleteHead(store, `${scope}:${channelId}`);
+        done(undefined);
+      }),
+    retain: (ids) =>
+      transact("readwrite", (store, done, then) => {
+        const allowed = new Set(ids);
+        then(store.getAll(), (rows: ScopedRow[]) => {
+          for (const row of rows)
+            if (row.scope === scope && !allowed.has(row.channelId))
+              store.delete(row.key);
+          done(undefined);
+        });
+      }),
+    clear: async () => {
+      await transact(
+        "readwrite",
+        (store, done) => {
+          store.delete(scope);
+          store.delete(profiles);
+          done(undefined);
+        },
+        STARTUP,
+      );
+      await transact("readwrite", (store, done, then) =>
+        // Include metadata left by a point delete on an older build.
+        then(store.getAll(), (rows: ScopedRow[]) => {
+          for (const row of rows)
+            if (row.scope === scope) store.delete(row.key);
+          done(undefined);
+        }),
+      );
+    },
+    close() {
+      closed = true;
+      void opening?.then(
+        (db) => db.close(),
+        () => {},
+      );
+    },
+  };
+}

@@ -1,0 +1,1799 @@
+import { sessionScope } from "../../features/agent-harness/session-scope";
+import type { AgentExecutionBinding } from "../../features/agents/execution";
+import {
+  readModelSettings,
+  type AgentModelResolution,
+  type AgentModelSettingsContext,
+} from "../../features/agents/model-settings";
+import type { AgentKey } from "../../features/agents/membership";
+import activityStyles from "../../features/agents/ActivityLayout.module.css";
+import { formatItemTimestamp } from "../../shared/datetime";
+import { useClockFormat } from "../../shared/clock-preference";
+import { InlineHeader } from "../../shared/design-system/ui/Header";
+import {
+  CaretRightIcon,
+  CodexLogoIcon,
+} from "../../shared/design-system/icons";
+import { SettingsGroup } from "../../shared/design-system/ui/SettingsGroup";
+import { ProviderDialogActions } from "../../features/agents/ProviderDialogActions";
+import {
+  AgentSaveButton,
+  ClearModelOverrides,
+} from "../../features/agents/AgentSaveButton";
+// The type's tabs: Codex's setup on this computer, and the agent's settings;
+// and its part of the New agent dialog.
+import {
+  useEffect,
+  useRef,
+  useId,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { TranscriptPanel } from "../../features/agents/TranscriptPanel";
+import { AgentInstructions } from "../../features/agents/AgentInstructions";
+import { CreateModelChoices } from "../../features/agents/CreateModelChoices";
+import { ModelPicker } from "../../features/agents/ModelPicker";
+import { AISettings, runsOnDetails } from "../../features/agents/AISettings";
+import { CompactionField } from "../../features/agents/Compaction";
+import { withCompactAt } from "../../features/agents/compact-at";
+import {
+  candidatesFor,
+  followRecommended,
+  offRecommended,
+  onRecommended,
+  type RecommendedCandidate,
+  recommendationFinal,
+  recommendationReady,
+  withRecommended,
+} from "../../features/agents/recommended";
+import {
+  ConversationName,
+  OpenedConversation,
+  useOpenedSession,
+  useOpenTranscript,
+} from "../../features/agents/OpenedConversation";
+import type {
+  AgentCreateProps,
+  AgentProviderSnapshot,
+  AgentViewProps,
+} from "../../features/agents/service";
+import { localStore, type AgentStore } from "../../features/agents/store";
+import { PanelSubview } from "../../features/panels/PanelSubview";
+import { Accordion } from "../../shared/design-system/ui/Accordion";
+import { Button } from "../../shared/design-system/ui/Button";
+import { Dialog } from "../../shared/design-system/ui/Dialog";
+import { SwitchPreferenceRow } from "../../shared/design-system/ui/SwitchPreferenceRow";
+import { Field } from "../../shared/design-system/ui/Field";
+import { Input } from "../../shared/design-system/ui/Input";
+import { Select } from "../../shared/design-system/ui/Select";
+import {
+  config as readConfig,
+  defaults,
+  resolveModel,
+  resolveEffort,
+  effortName,
+  validWorkspace,
+  type Config,
+  type Model,
+} from "./config";
+import {
+  AppServer,
+  listModels,
+  voiceCatalog,
+  needsSignIn,
+  type Spawn,
+} from "./rpc";
+import type { CodexRuntime, SavedConversation } from "./runtime";
+import type { CodexSetup } from "./setup";
+import { readTranscript, TURN_LIMIT } from "./transcript";
+import { VoicePreview } from "./VoicePreview";
+import {
+  discoverPreviews,
+  type PreviewAuth,
+  type PreviewHost,
+} from "./voice-preview";
+
+const label = ({ channelId, name, root, community }: SavedConversation) =>
+  community
+    ? "Community session"
+    : `${name || channelId.slice(0, 8)} · ${root ? `thread ${root.slice(0, 8)}` : "channel"}`;
+
+type Catalog = {
+  previews?: Record<string, string> | undefined;
+  accents?: Record<string, string> | undefined;
+  voices?: string[] | undefined;
+  defaultVoice?: string | undefined;
+  models: Model[];
+};
+type ProviderDefaults = Readonly<{ model: string; effort: string }>;
+type ProviderState = AgentProviderSnapshot &
+  Readonly<{
+    checking: boolean;
+    previewChecking?: boolean;
+    voiceChecking?: boolean;
+    data: Catalog | undefined;
+    error: string;
+    defaults: ProviderDefaults;
+  }>;
+function voiceConfig(current: Config, voice: Config["voice"]): Config {
+  const next = readConfig({ ...current, voice });
+  return onRecommended(next) ? next : offRecommended(next);
+}
+const STORAGE_KEY = "buzz.codex.provider-defaults.v1";
+const SIGN_IN_ERROR = "Codex needs you to sign in.";
+const NOT_INSTALLED = "The Codex integration isn't installed yet.";
+const CONVERSATION_LIMIT = 30;
+/** Read-only setup/catalog discovery uses the same declared native transport. */
+async function catalog(spawn: Spawn, signal: AbortSignal, host?: PreviewHost) {
+  const rpc = new AppServer();
+  const abort = () => {
+    void rpc.close();
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  const close = async () => {
+    signal.removeEventListener("abort", abort);
+    await rpc.close();
+  };
+  let detached = false;
+  try {
+    signal.throwIfAborted();
+    await rpc.open(spawn, defaults.workspace);
+    signal.throwIfAborted();
+    if (await needsSignIn(rpc)) throw new Error(SIGN_IN_ERROR);
+    const models = await listModels(rpc);
+    // Optional voice RPCs must not hold text-model readiness.
+    const voices = Promise.all([
+      voiceCatalog(rpc).catch(() => undefined),
+      rpc
+        .request<{ config: { realtime?: { voice?: string } } }>("config/read", {
+          includeLayers: false,
+        })
+        .catch(() => undefined),
+    ]).then(([voices, config]) => ({
+      voices: voices?.v3,
+      defaultVoice: config
+        ? (config.config?.realtime?.voice ?? voices?.defaultV1)
+        : undefined,
+    }));
+    const auth = host
+      ? rpc
+          .request<PreviewAuth>("getAuthStatus", {
+            includeToken: true,
+            refreshToken: false,
+          })
+          .catch(() => undefined)
+      : Promise.resolve(undefined);
+    const previews = Promise.all([voices, auth])
+      .finally(close)
+      .then(([, auth]) => {
+        signal.throwIfAborted();
+        return host ? discoverPreviews(auth, host) : undefined;
+      })
+      .catch(() => undefined);
+    detached = true;
+    return { models, voices, previews };
+  } finally {
+    if (!detached) await close();
+  }
+}
+
+/** Codex's one device-wide health/catalog view and versioned default store. */
+export class CodexProvider {
+  private state: ProviderState;
+  private readonly listeners = new Set<() => void>();
+  private abort: AbortController | undefined;
+  private pending: Promise<void> | undefined;
+  private readonly offSetup: (() => void) | undefined;
+
+  constructor(
+    private readonly spawn: Spawn,
+    private readonly storage: AgentStore = localStore(),
+    private readonly setup?: CodexSetup,
+    readonly previewHost?: PreviewHost,
+  ) {
+    this.state = Object.freeze({
+      readiness: "checking",
+      checking: false,
+      data: undefined,
+      error: "",
+      defaults: this.readDefaults(),
+    });
+    // An install or sign-in holds the dialog open, then Codex is checked again.
+    this.offSetup = setup?.subscribe(() => {
+      const running = Boolean(setup.snapshot().running);
+      if (running === Boolean(this.state.blocking)) return;
+      const { blocking: _, ...rest } = this.state;
+      this.state = Object.freeze(running ? { ...rest, blocking: true } : rest);
+      for (const listener of this.listeners) listener();
+      if (!running) void this.check();
+    });
+  }
+
+  snapshot = () => this.state;
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+  private set(change: Partial<ProviderState>) {
+    this.state = Object.freeze({ ...this.state, ...change });
+    for (const listener of this.listeners) listener();
+  }
+  check() {
+    if (this.pending) return this.pending;
+    const pending = this.runCheck();
+    this.pending = pending;
+    void pending.finally(() => {
+      if (this.pending === pending) this.pending = undefined;
+    });
+    return pending;
+  }
+  private async runCheck() {
+    this.abort?.abort();
+    const abort = new AbortController();
+    this.abort = abort;
+    this.set({
+      ...(this.state.data ? {} : { readiness: "checking" as const }),
+      checking: true,
+      previewChecking: false,
+      voiceChecking: false,
+      error: "",
+    });
+    try {
+      const status = await this.setup?.check();
+      if (status && status.state !== "ready")
+        throw new Error(
+          status.state === "missing"
+            ? NOT_INSTALLED
+            : status.state === "signed-out"
+              ? SIGN_IN_ERROR
+              : status.message,
+        );
+      const { previews, voices, ...data } = await catalog(
+        this.spawn,
+        abort.signal,
+        this.previewHost,
+      );
+      if (this.abort === abort) {
+        this.set({
+          readiness: "ready",
+          checking: false,
+          previewChecking: !!previews,
+          voiceChecking: true,
+          data,
+          error: "",
+        });
+        void voices.then((voices) => {
+          if (this.abort === abort && !abort.signal.aborted)
+            this.set({
+              data: { ...data, ...this.state.data, ...voices },
+              voiceChecking: false,
+            });
+        });
+        void previews?.then((previews) => {
+          if (this.abort === abort && !abort.signal.aborted)
+            this.set({
+              data: { ...data, ...this.state.data, ...previews },
+              previewChecking: false,
+            });
+        });
+      }
+    } catch (error) {
+      const reason = message(error);
+      if (this.abort === abort && !abort.signal.aborted)
+        this.set({
+          readiness: "attention",
+          attentionLabel:
+            reason === NOT_INSTALLED
+              ? "Install Codex integration"
+              : reason === SIGN_IN_ERROR
+                ? "Log in to Codex"
+                : "Codex needs attention",
+          checking: false,
+          data: undefined,
+          error: reason,
+        });
+    }
+  }
+  /** Settles once the defaults are saved, and only then uses them; rejects,
+   * keeping the saved ones, when they could not be saved. */
+  async saveDefaults(next: ProviderDefaults) {
+    const selected = this.model(next.model);
+    const effort =
+      !next.effort ||
+      selected?.supportedReasoningEfforts.some(
+        (choice) => choice.reasoningEffort === next.effort,
+      )
+        ? next.effort
+        : (selected?.defaultReasoningEffort ?? "");
+    const defaults = Object.freeze({ model: next.model, effort });
+    await this.storage.set(
+      STORAGE_KEY,
+      JSON.stringify({ version: 1, ...defaults }),
+    );
+    this.set({ defaults });
+  }
+  /** Whether Codex is installed, signed in and offers the candidate's model
+   * on its thinking level. Rejects when its check failed some other way, so
+   * that answer is unsure rather than no. */
+  async recommends(candidate: RecommendedCandidate) {
+    // A refresh under way keeps the last readiness meanwhile: wait for it.
+    if (this.state.checking || this.state.readiness !== "ready")
+      await this.check();
+    const { readiness, data, error } = this.state;
+    if (readiness === "ready" && data) return offers(data, candidate);
+    if (error === NOT_INSTALLED || error === SIGN_IN_ERROR) return false;
+    throw new Error("Codex couldn't say whether it is ready");
+  }
+  /** What its agents on Recommended run on: the first Codex candidate its
+   * catalog offers. Undefined until the catalog is read; `null`, for Codex's
+   * own default, when none is offered or the catalog can't be read. */
+  recommended(): RecommendedCandidate | null | undefined {
+    if (this.found) return this.found;
+    const { data, readiness } = this.state;
+    if (!data) return readiness === "attention" ? null : undefined;
+    // A pick is kept for the launch, as goose keeps its own: a later failed
+    // check doesn't move agents to the default mid-session. "None offered"
+    // isn't kept, so a later catalog that offers one is taken up.
+    const found =
+      candidatesFor("codex").find((candidate) => offers(data, candidate)) ??
+      null;
+    // Kept only once the setup is final: before that, a bundled plugin may
+    // still replace the build's, so readers are told to look again then.
+    if (recommendationFinal()) {
+      if (found) this.found = found;
+    } else if (!this.waiting) {
+      this.waiting = true;
+      void recommendationReady().then(() => {
+        this.waiting = false;
+        this.set({});
+      });
+    }
+    return found;
+  }
+  private found: RecommendedCandidate | undefined;
+  private waiting = false;
+  resolve(raw: unknown, remote = false): Config {
+    // A remote target's catalog isn't this computer's: an agent on
+    // Recommended there runs on its Codex default. Apps follow this
+    // computer's Codex sign-in, so they stay off there.
+    if (remote) {
+      const { apps: _apps, ...config } = readConfig(raw);
+      return config;
+    }
+    // Recommended picks the model and level, as an explicit choice would.
+    const explicit = followRecommended(
+      raw,
+      readConfig(raw),
+      this.recommended(),
+    );
+    const data = this.state.data;
+    const inheritedModel = this.state.defaults.model;
+    const unavailable = Boolean(
+      inheritedModel && data && !catalogModel(inheritedModel, data),
+    );
+    const model = explicit.model || (unavailable ? "" : inheritedModel);
+    if (explicit.effort) return { ...explicit, model };
+    const selected = catalogModel(model, data);
+    const preferred =
+      unavailable && !explicit.model ? "" : this.state.defaults.effort;
+    const effort = !preferred
+      ? ""
+      : !data
+        ? preferred
+        : selected?.supportedReasoningEfforts.some(
+              (choice) => choice.reasoningEffort === preferred,
+            )
+          ? preferred
+          : (selected?.defaultReasoningEffort ?? "");
+    return { ...explicit, model, effort };
+  }
+  /** Read the same next-turn selection without refreshing the catalog. */
+  readModelSettings(
+    raw: unknown,
+    { execution = "local", synced }: Partial<AgentModelSettingsContext> = {},
+  ) {
+    const saved = readConfig(raw);
+    const recommended = onRecommended(raw);
+    const settings = this.resolve(raw, execution !== "local");
+    const candidate = recommended ? this.recommended() : null;
+    const source = (field: "model" | "effort") =>
+      saved[field]
+        ? ("configured" as const)
+        : candidate
+          ? ("recommended" as const)
+          : field === "effort" && settings.effort !== this.state.defaults.effort
+            ? ("provider" as const)
+            : ("device" as const);
+    const unavailable =
+      execution === "unavailable"
+        ? "execution-unavailable"
+        : execution === "remote"
+          ? "remote"
+          : // Before the setup is final, a bundled plugin may still
+            // replace the build's pick, so it isn't reported yet.
+            recommended && (candidate === undefined || !recommendationFinal())
+            ? "not-loaded"
+            : undefined;
+    const data = this.state.data;
+    const model = resolveModel(settings.model, data?.models ?? []);
+    const selected = data?.models.find((row) => row.model === model);
+    const missing = data
+      ? "unknown"
+      : this.state.readiness === "attention"
+        ? "unknown"
+        : "not-loaded";
+    const modelResolution: AgentModelResolution = unavailable
+      ? { unavailable }
+      : data && !selected
+        ? { unavailable: "unknown" }
+        : model
+          ? {
+              value: model,
+              source: settings.model ? source("model") : "provider",
+            }
+          : { unavailable: missing };
+    const effort = selected
+      ? resolveEffort(selected, settings.effort)
+      : candidate?.effort;
+    return readModelSettings(saved, {
+      recommended,
+      resolved: {
+        model: modelResolution,
+        effort: unavailable
+          ? { unavailable }
+          : synced?.effort && effort && effort !== synced.effort
+            ? { unavailable: "unsupported" }
+            : effort
+              ? {
+                  value: effort,
+                  source:
+                    effort === settings.effort ? source("effort") : "provider",
+                }
+              : { unavailable: missing },
+      },
+    });
+  }
+  dispose() {
+    this.offSetup?.();
+    this.abort?.abort();
+    this.abort = undefined;
+  }
+  private model(model: string) {
+    return catalogModel(model, this.state.data);
+  }
+  private readDefaults(): ProviderDefaults {
+    try {
+      const value: unknown = JSON.parse(
+        this.storage.get(STORAGE_KEY) ?? "null",
+      );
+      if (
+        value &&
+        typeof value === "object" &&
+        (value as { version?: unknown }).version === 1 &&
+        typeof (value as { model?: unknown }).model === "string" &&
+        typeof (value as { effort?: unknown }).effort === "string"
+      )
+        return Object.freeze({
+          model: readConfig(value).model,
+          effort: (value as { effort: string }).effort,
+        });
+    } catch {
+      // Malformed local preferences follow Codex's recommendation.
+    }
+    return Object.freeze({ model: "", effort: "" });
+  }
+}
+
+const message = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
+const SCOPES = [
+  {
+    label: "",
+    options: [
+      { value: "thread", label: "One session per thread" },
+      { value: "channel", label: "One session per channel" },
+      { value: "community", label: "One session per community" },
+    ],
+  },
+];
+
+/** The catalog's models, for the picker; it adds Codex's own default. */
+const choices = (data?: Catalog) =>
+  data?.models.map((model) => ({
+    id: model.model,
+    label: model.displayName,
+    description: model.description,
+  })) ?? [];
+const catalogModel = (model: string, data?: Catalog) => {
+  if (!data) return undefined;
+  const resolved = resolveModel(model, data.models);
+  return data.models.find((choice) => choice.model === resolved);
+};
+/** Whether the catalog lists a candidate's model on its thinking level, so
+ * a run never swaps in another level than the one shown. */
+const offers = (data: Catalog, { model, effort }: RecommendedCandidate) =>
+  data.models.some(
+    (row) =>
+      row.model === model &&
+      row.supportedReasoningEfforts.some(
+        (choice) => choice.reasoningEffort === effort,
+      ),
+  );
+const providerDefaultLabel = (model: string, data?: Catalog) => {
+  const selected = catalogModel(model, data);
+  const name = selected?.displayName || selected?.model;
+  return name || model || "Recommended";
+};
+const codexDefaultEffortLabel = (effort: string, model?: Model) => {
+  const resolved = effort || model?.defaultReasoningEffort;
+  return resolved ? effortName(resolved) : "Automatic";
+};
+const thinkingOptions = (
+  effort: string,
+  effectiveEffort: string,
+  selected?: Model,
+  catalog?: Catalog,
+  showUnavailableWithoutCatalog = false,
+) => {
+  const supported = selected?.supportedReasoningEfforts ?? [];
+  return [
+    {
+      value: "",
+      label: `${codexDefaultEffortLabel(effectiveEffort, selected)} · Default`,
+    },
+    ...(effort &&
+    !supported.some((candidate) => candidate.reasoningEffort === effort)
+      ? [
+          {
+            value: effort,
+            label:
+              catalog || showUnavailableWithoutCatalog
+                ? `${effortName(effort)} (unavailable)`
+                : effortName(effort),
+          },
+        ]
+      : []),
+    ...supported.map((candidate) => ({
+      value: candidate.reasoningEffort,
+      label: effortName(candidate.reasoningEffort),
+    })),
+  ];
+};
+/** A model's choice also resets to its default when the catalog supports it. */
+const modelChange = (model: string, data?: Catalog) => {
+  const selected = data?.models.find((candidate) => candidate.model === model);
+  const effort = selected?.defaultReasoningEffort ?? "";
+  return {
+    model,
+    effort: selected?.supportedReasoningEfforts.some(
+      (choice) => choice.reasoningEffort === effort,
+    )
+      ? effort
+      : "",
+  };
+};
+
+function CodexSignIn({
+  login,
+  step,
+  checking,
+  check,
+  disabled,
+}: {
+  login: CodexSetup;
+  step: "install" | "login";
+  checking: boolean;
+  check(): void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const { running, output } = useSyncExternalStore(
+    login.subscribe,
+    login.snapshot,
+  );
+  const action = step === "install" ? "Install integration" : "Sign in";
+  // A step's process ends before the check that follows it, which may still
+  // find the step needed; until it answers, neither button starts another.
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="prominent"
+        disabled={disabled || !!running || checking}
+        focusableWhenDisabled
+        onClick={() => {
+          if (login.snapshot().running) return;
+          setOpen(true);
+          void login.run(step);
+        }}
+      >
+        {action}
+      </Button>
+      <Dialog
+        open={open}
+        title={step === "install" ? "Codex integration" : "Sign in to Codex"}
+        description={step === "login" ? "Continue in your browser." : undefined}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) void login.cancel();
+        }}
+      >
+        <section className="grid gap-2">
+          {step === "install" && (
+            <p role="status" className="m-0">
+              {checking && !running ? "Checking Codex…" : NOT_INSTALLED}
+            </p>
+          )}
+          {/* One button per slot, so focus stays put as Install becomes
+              Sign in and Cancel becomes Check again. */}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="prominent"
+              size="sm"
+              loading={running === step || (!running && checking)}
+              disabled={disabled || (!!running && running !== step)}
+              onClick={() => void login.run(step)}
+            >
+              {action}
+            </Button>
+            {(step !== "login" || running) && (
+              <Button
+                variant="ghost"
+                disabled={!running && checking}
+                focusableWhenDisabled
+                onClick={() => void (running ? login.cancel() : check())}
+              >
+                {running ? "Cancel" : "Check again"}
+              </Button>
+            )}
+          </div>
+          {step === "install" && (
+            <p className="m-0 text-body-sm text-subtle">
+              Downloads Buzz's own copy of Codex (about 130 MB) and keeps it on
+              the latest release. Your own installation of Codex will be
+              unaffected, and uses the same sign-in and settings.
+            </p>
+          )}
+          {output && (
+            <Accordion
+              items={[
+                {
+                  value: "details",
+                  title: "Setup details",
+                  content: (
+                    <pre
+                      role="log"
+                      aria-label="Setup output"
+                      className="m-0 max-h-60 overflow-auto whitespace-pre-wrap break-all text-caption"
+                    >
+                      {output}
+                    </pre>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </section>
+      </Dialog>
+    </>
+  );
+}
+
+export function createTabs(
+  provider: CodexProvider,
+  runtime: CodexRuntime,
+  spawn: Spawn,
+  setup: CodexSetup,
+  binding: (
+    agent: AgentKey,
+  ) => Promise<AgentExecutionBinding | undefined> = async () => undefined,
+) {
+  const login = setup;
+
+  function useBinding(member?: AgentViewProps<Config>["agent"]) {
+    const agent = member?.key;
+    const executionBinding = JSON.stringify(member?.executionBinding);
+    const [attempt, setAttempt] = useState(0);
+    const [read, setRead] = useState<{
+      agent?: AgentKey;
+      observed?: string;
+      binding?: AgentExecutionBinding;
+      error?: string;
+    }>();
+    // biome-ignore lint/correctness/useExhaustiveDependencies: binding changes and retry requests require a saved-state read.
+    useEffect(() => {
+      let current = true;
+      if (!agent) {
+        setRead({});
+        return;
+      }
+      void binding(agent).then(
+        (binding) => {
+          if (current)
+            setRead({
+              agent,
+              ...(executionBinding ? { observed: executionBinding } : {}),
+              ...(binding ? { binding } : {}),
+            });
+        },
+        (error) => {
+          if (current)
+            setRead({
+              agent,
+              ...(executionBinding ? { observed: executionBinding } : {}),
+              error: message(error),
+            });
+        },
+      );
+      return () => {
+        current = false;
+      };
+    }, [agent, executionBinding, attempt]);
+    const held =
+      read?.agent === agent && read?.observed === executionBinding
+        ? read
+        : undefined;
+    return {
+      bound: held?.binding,
+      checking: !!agent && !held,
+      error: held?.error ?? "",
+      retry: () => {
+        setRead(undefined);
+        setAttempt((value) => value + 1);
+      },
+    };
+  }
+  function useProvider(agent?: AgentViewProps<Config>["agent"]) {
+    const inspected = useBinding(agent);
+    const state = useSyncExternalStore(
+      provider.subscribe,
+      provider.snapshot,
+      provider.snapshot,
+    );
+    useEffect(() => {
+      if (
+        !inspected.checking &&
+        !inspected.error &&
+        !inspected.bound &&
+        state.readiness === "checking" &&
+        !state.checking
+      )
+        void provider.check();
+    }, [
+      state.readiness,
+      state.checking,
+      inspected.checking,
+      inspected.error,
+      inspected.bound,
+    ]);
+    return {
+      ...state,
+      bound: inspected.bound,
+      local: !inspected.bound && !inspected.checking && !inspected.error,
+      ...(inspected.bound || inspected.checking || inspected.error
+        ? {
+            data: undefined,
+            checking: inspected.checking,
+            error: inspected.error,
+          }
+        : {}),
+      check: () =>
+        inspected.error ? inspected.retry() : void provider.check(),
+    };
+  }
+
+  function CreateModel({
+    agent,
+    openSettings,
+    config,
+    onChange,
+    onReadyChange,
+    ...props
+  }: AgentCreateProps<Config>) {
+    const {
+      data,
+      checking,
+      error,
+      defaults: providerDefaults,
+      bound,
+      local,
+      check,
+    } = useProvider(agent);
+    // A pick here takes the agent off Recommended, from what it runs on.
+    const current = offRecommended(
+      followRecommended(
+        config,
+        readConfig(config),
+        bound ? null : provider.recommended(),
+      ),
+    );
+    // The setup's status holds through the provider's next check, so the
+    // button, and its focus, stays put as Install integration becomes Sign in.
+    const { status } = useSyncExternalStore(
+      login.subscribe,
+      login.snapshot,
+      login.snapshot,
+    );
+    const retry = check;
+    const step = !local
+      ? undefined
+      : status?.state === "missing" || error === NOT_INSTALLED
+        ? "install"
+        : status?.state === "signed-out" || error === SIGN_IN_ERROR
+          ? "login"
+          : undefined;
+    const ready =
+      !step &&
+      !checking &&
+      !error &&
+      !!catalogModel(current.model || providerDefaults.model, data);
+    useEffect(() => onReadyChange?.(ready), [onReadyChange, ready]);
+    const field = useRef<HTMLDivElement>(null);
+    const hadStep = useRef(false);
+    const handoff = useRef(false);
+    // Setup's dialog and button leave once Codex is ready; focus they held
+    // moves to the model field, not to the page. The field takes it once
+    // the models load, as it is disabled until then.
+    useEffect(() => {
+      const unfocused = () =>
+        !document.activeElement || document.activeElement === document.body;
+      if (step) handoff.current = false;
+      else if (hadStep.current) handoff.current = unfocused();
+      hadStep.current = Boolean(step);
+      if (!handoff.current || checking) return;
+      handoff.current = false;
+      if (unfocused())
+        field.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+    }, [step, checking]);
+    if (bound)
+      return (
+        <Button
+          variant={props.modelAppearance ?? "ghost"}
+          size="xs"
+          aria-label="Model settings"
+          disabled={props.disabled || !openSettings}
+          onClick={openSettings}
+        >
+          {current.model || "Codex default"}
+        </Button>
+      );
+    if (step)
+      return (
+        <CodexSignIn
+          login={login}
+          step={step}
+          checking={checking}
+          check={retry}
+          disabled={props.disabled}
+        />
+      );
+    return (
+      <div ref={field} className="contents">
+        <CreateModelChoices
+          {...props}
+          models={choices(data)}
+          value={current.model}
+          defaultModel={catalogModel(providerDefaults.model, data)?.model ?? ""}
+          defaultLabel={providerDefaultLabel(providerDefaults.model, data)}
+          loading={checking}
+          error={error}
+          retry={retry}
+          onChange={(model) =>
+            onChange(readConfig({ ...current, ...modelChange(model, data) }))
+          }
+        />
+        {onReadyChange &&
+          !checking &&
+          !error &&
+          data &&
+          current.model &&
+          !catalogModel(current.model, data) && (
+            <p role="status" className="m-0 text-body-sm text-subtle">
+              This model isn’t available. Choose another model to continue.
+            </p>
+          )}
+      </div>
+    );
+  }
+
+  function CreateThinking({
+    agent,
+    config,
+    onChange,
+    disabled,
+  }: AgentCreateProps<Config>) {
+    const current = readConfig(config);
+    const { data, checking, bound } = useProvider(agent);
+    const { effort } = current;
+    const effective = provider.resolve({ ...current, effort: "" }, !!bound);
+    const selected = catalogModel(effective.model, data);
+    const previousModel = useRef(current.model);
+    useEffect(() => {
+      const modelChanged = previousModel.current !== current.model;
+      previousModel.current = current.model;
+      // modelChange validates the selection; this effect handles later catalog changes.
+      if (modelChanged) return;
+      if (agent || disabled || checking || !data || !effort || !selected)
+        return;
+      if (
+        !selected.supportedReasoningEfforts.some(
+          (choice) => choice.reasoningEffort === effort,
+        )
+      )
+        onChange(readConfig({ ...config, effort: "" }));
+    }, [
+      agent,
+      checking,
+      config,
+      current.model,
+      data,
+      disabled,
+      effort,
+      onChange,
+      selected,
+    ]);
+    const efforts = thinkingOptions(
+      current.effort,
+      effective.effort,
+      selected,
+      data,
+    );
+    return (
+      <Select
+        key={current.model || "inherited"}
+        label="Thinking"
+        valueLabel={
+          current.effort
+            ? undefined
+            : codexDefaultEffortLabel(effective.effort, selected)
+        }
+        valueSuffix={current.effort ? undefined : " · Default"}
+        variant="compact"
+        value={current.effort}
+        groups={[{ label: "", options: efforts }]}
+        disabled={disabled || checking || !selected}
+        onValueChange={(effort) => onChange(readConfig({ ...current, effort }))}
+      />
+    );
+  }
+
+  function DefaultControl({ onConfigure }: { onConfigure(): void }) {
+    const state = useProvider();
+    const [error, setError] = useState("");
+    return (
+      <>
+        <ModelPicker
+          includeDefault={false}
+          resetLabel="Use Codex recommended"
+          compact
+          groupByFamily
+          label="Codex default model"
+          loading={state.checking}
+          models={choices(state.data).map((choice) => ({
+            ...choice,
+            efforts: [
+              { id: "", label: "Automatic" },
+              ...(
+                catalogModel(choice.id, state.data)
+                  ?.supportedReasoningEfforts ?? []
+              ).map((level) => ({
+                id: level.reasoningEffort,
+                label: effortName(level.reasoningEffort),
+              })),
+            ],
+          }))}
+          effort={state.defaults.effort}
+          effortLabel={
+            state.defaults.effort
+              ? effortName(state.defaults.effort)
+              : "Automatic"
+          }
+          onEffortChange={(model, effort) => {
+            provider.saveDefaults({ model, effort }).then(
+              () => setError(""),
+              (reason) => setError(String(reason)),
+            );
+          }}
+          value={state.defaults.model}
+          defaultModel={catalogModel("", state.data)?.model}
+          defaultLabel={providerDefaultLabel("", state.data)}
+          onConfigure={onConfigure}
+          onChange={(model) => {
+            provider.saveDefaults({ model, effort: "" }).then(
+              () => setError(""),
+              (reason) => setError(String(reason)),
+            );
+          }}
+        />
+        {error && <span role="alert">{error}</span>}
+      </>
+    );
+  }
+
+  function ProviderDialogBody({ onClose }: { onClose(): void }) {
+    const defaultsForm = useId();
+    const state = useProvider();
+    const { data, error, checking } = state;
+    const installing = useSyncExternalStore(
+      setup.subscribe,
+      setup.snapshot,
+      setup.snapshot,
+    );
+    const [draft, setDraft] = useState(state.defaults);
+    const [saveError, setSaveError] = useState("");
+    const [savingDefaults, setSavingDefaults] = useState(false);
+    const action =
+      error === NOT_INSTALLED
+        ? ({ step: "install", label: "Install integration" } as const)
+        : error === SIGN_IN_ERROR
+          ? ({ step: "login", label: "Sign in" } as const)
+          : undefined;
+    useEffect(() => setDraft(state.defaults), [state.defaults]);
+    const selected = catalogModel(draft.model, data);
+    const efforts = [
+      {
+        value: "",
+        label: `${codexDefaultEffortLabel("", selected)} · Default`,
+      },
+      ...(draft.effort &&
+      !selected?.supportedReasoningEfforts.some(
+        (effort) => effort.reasoningEffort === draft.effort,
+      )
+        ? [
+            {
+              value: draft.effort,
+              label: `${effortName(draft.effort)} (unavailable)`,
+            },
+          ]
+        : []),
+      ...(selected?.supportedReasoningEfforts.map((effort) => ({
+        value: effort.reasoningEffort,
+        label: effortName(effort.reasoningEffort),
+      })) ?? []),
+    ];
+    return (
+      <div className="grid gap-6">
+        {installing.notice && (
+          <p role="status" className="m-0 text-body-sm">
+            {installing.notice}
+          </p>
+        )}
+        <form
+          id={defaultsForm}
+          className="grid gap-3"
+          hidden={state.readiness !== "ready"}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (savingDefaults) return;
+            setSaveError("");
+            setSavingDefaults(true);
+            // Closes only once saved; else the draft stays to try again.
+            provider
+              .saveDefaults(draft)
+              .then(onClose, (reason) => setSaveError(message(reason)))
+              .finally(() => setSavingDefaults(false));
+          }}
+        >
+          <Select
+            label="Default thinking"
+            valueLabel={
+              draft.effort ? undefined : codexDefaultEffortLabel("", selected)
+            }
+            valueSuffix={draft.effort ? undefined : " · Default"}
+            variant="preference"
+            value={draft.effort}
+            groups={[{ label: "", options: efforts }]}
+            disabled={checking || !selected || savingDefaults}
+            onValueChange={(effort) => setDraft({ ...draft, effort })}
+          />
+          {saveError && (
+            <p role="alert" className="buzz-field-error">
+              {saveError}
+            </p>
+          )}
+        </form>
+        <div className="grid gap-2" hidden={state.readiness === "ready"}>
+          {installing.running ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p role="status" className="m-0 text-body-sm">
+                {installing.running === "login"
+                  ? "Waiting for Codex sign-in…"
+                  : "Installing Codex…"}
+              </p>
+            </div>
+          ) : checking ? (
+            <p role="status" className="m-0">
+              Checking Codex…
+            </p>
+          ) : error ? (
+            <p role="alert" className="m-0 text-body-sm text-primary">
+              <strong>{error}</strong>
+            </p>
+          ) : null}
+          {action?.step === "install" && !installing.running && (
+            <p className="m-0 text-body-sm text-subtle">
+              Downloads Buzz's own copy of Codex (about 130 MB) and keeps it on
+              the latest release. Your own installation of Codex will be
+              unaffected, and uses the same sign-in and settings.
+            </p>
+          )}
+          {installing.output && (
+            <div
+              role="log"
+              aria-label="Setup output"
+              className="m-0 max-h-60 overflow-auto whitespace-pre-wrap text-body-sm text-subtle"
+            >
+              {installing.output}
+            </div>
+          )}
+        </div>
+        <ProviderDialogActions>
+          <Button
+            onClick={() =>
+              installing.running ? void setup.cancel() : onClose()
+            }
+          >
+            Cancel
+          </Button>
+          {state.readiness === "ready" ? (
+            <Button
+              type="submit"
+              form={defaultsForm}
+              variant="prominent"
+              loading={savingDefaults}
+              disabled={
+                JSON.stringify(draft) === JSON.stringify(state.defaults)
+              }
+              focusableWhenDisabled
+            >
+              Save defaults
+            </Button>
+          ) : action && !installing.running && !checking ? (
+            <Button
+              autoFocus
+              variant="prominent"
+              onClick={() => void setup.run(action.step)}
+            >
+              {action.label}
+            </Button>
+          ) : null}
+        </ProviderDialogActions>
+      </div>
+    );
+  }
+
+  /** The instructions a new agent starts with. */
+  function Create({ config, onChange, disabled }: AgentCreateProps<Config>) {
+    const current = readConfig(config);
+    return (
+      <AgentInstructions
+        creation
+        value={current.instructions}
+        disabled={disabled}
+        onChange={(instructions) =>
+          onChange(readConfig({ ...current, instructions }))
+        }
+      />
+    );
+  }
+
+  /** One conversation's Codex thread, kept current while Codex works. */
+  function TranscriptView({
+    agent,
+    conversation,
+    working,
+  }: {
+    agent: AgentViewProps<Config>["agent"];
+    conversation: SavedConversation;
+    working: boolean;
+  }) {
+    return (
+      <TranscriptPanel
+        agent={agent}
+        read={async (signal) => {
+          if (await binding(agent.key))
+            throw new Error(
+              "Transcripts are unavailable for remote Codex agents.",
+            );
+          const transcript = await readTranscript(
+            spawn,
+            { agent: { key: agent.key, name: agent.name }, ...conversation },
+            signal,
+            (pubkey) => runtime.name(agent.key, pubkey),
+          );
+          return (
+            transcript && {
+              ...transcript,
+              turns: runtime.prompts(agent.key).shown(transcript.turns),
+            }
+          );
+        }}
+        readKey={conversation.key}
+        working={working}
+        reading="Reading the Codex session…"
+        failed="Could not read the Codex session"
+        missing={
+          <p className="m-0 text-body-sm text-subtle">
+            Codex has no history for this conversation on this computer. Its
+            session may have been deleted.
+          </p>
+        }
+        notes={(transcript) =>
+          transcript.more && (
+            <p className="m-0 text-body-sm text-subtle">
+              Showing the latest {TURN_LIMIT} turns.
+            </p>
+          )
+        }
+      />
+    );
+  }
+
+  /** The agent's sessions: the one it was opened from, recent ones, and their
+   * transcripts. */
+  function ActivityTab(props: Parameters<typeof ActivityContent>[0]) {
+    const agent = props.agent.key;
+    const revision = useSyncExternalStore(
+      runtime.subscribe,
+      () =>
+        `${runtime.conversationVersion(agent)}:${runtime
+          .sessions(agent)
+          .map(({ key, status }) => `${key}:${status}`)
+          .join("\0")}`,
+    );
+    const [attempt, retry] = useState(0);
+    const [read, setRead] = useState<
+      | { agent: AgentKey; rows: SavedConversation[] }
+      | { agent: AgentKey; error: string }
+    >();
+    // biome-ignore lint/correctness/useExhaustiveDependencies: turn state and retries refresh saved inventory.
+    useEffect(() => {
+      let current = true;
+      void runtime.listConversations(agent).then(
+        (rows) => current && setRead({ agent, rows }),
+        (error) => current && setRead({ agent, error: message(error) }),
+      );
+      return () => {
+        current = false;
+      };
+    }, [agent, revision, attempt]);
+    if (read?.agent !== agent)
+      return <p role="status">Loading saved conversations…</p>;
+    if ("error" in read)
+      return (
+        <div className="grid gap-2">
+          <p role="alert">{read.error}</p>
+          <Button onClick={() => retry((value) => value + 1)}>Try again</Button>
+        </div>
+      );
+    return <ActivityContent {...props} listed={read.rows} />;
+  }
+  function ActivityContent({
+    agent,
+    conversation,
+    initialTranscript,
+    close,
+    listed,
+  }: {
+    agent: AgentViewProps<Config>["agent"];
+    conversation?: AgentViewProps<Config>["conversation"];
+    initialTranscript?: AgentViewProps<Config>["initialTranscript"];
+    close?: AgentViewProps<Config>["close"];
+    listed?: SavedConversation[];
+  }) {
+    useClockFormat();
+    const sessions = useSyncExternalStore(runtime.subscribe, () =>
+      runtime.sessions(agent.key),
+    );
+    const conversations = listed ?? runtime.conversations(agent.key);
+    const {
+      session: here,
+      searching,
+      error: lookupError,
+    } = useOpenedSession(
+      conversations,
+      conversation,
+      (place, signal) =>
+        runtime.find(
+          { key: agent.key, name: agent.name },
+          place,
+          signal,
+          readConfig(agent.config).scope === "community",
+        ),
+      (channelId) => runtime.channelLabel(agent.key, channelId),
+      readConfig(agent.config).scope,
+    );
+    const recent = conversations
+      .filter((item) => item.key !== here?.key)
+      .slice(0, CONVERSATION_LIMIT);
+    const { open, show, back } = useOpenTranscript(
+      conversation,
+      label,
+      initialTranscript && { initial: here, searching, ...initialTranscript },
+      close,
+    );
+    const saved = new Set(conversations.map((row) => row.key));
+    const views = new Map(sessions.map((view) => [view.key, view]));
+    const unbound = sessions.filter((view) => !saved.has(view.key));
+    const current = here && views.get(here.key);
+    const detail = (text: string, status?: string) =>
+      status !== "Working" ? (
+        <p className="m-0 whitespace-pre-wrap break-words text-body-sm text-subtle">
+          {text}
+        </p>
+      ) : (
+        <details className={activityStyles.details}>
+          <summary className="text-body-sm text-subtle">
+            <CaretRightIcon size={14} aria-hidden="true" />
+            <span>Latest activity</span>
+          </summary>
+          <pre className={`${activityStyles.detail} text-mono`}>{text}</pre>
+        </details>
+      );
+    return (
+      <div className={activityStyles.activity}>
+        {conversation && (
+          <OpenedConversation
+            conversation={conversation}
+            harness="Codex"
+            session={here}
+            searching={searching}
+            error={lookupError}
+            status={current?.status}
+            detail={current?.detail && detail(current.detail, current.status)}
+            onView={() => here && show(here)}
+          />
+        )}
+        <section className={activityStyles.section}>
+          <InlineHeader title="Recent conversations" />
+          <SettingsGroup layout="form">
+            {recent.length || unbound.length ? (
+              <ul className={activityStyles.list}>
+                {/* Work that failed before Codex started a thread has no binding. */}
+                {unbound.map((view) => (
+                  <li key={view.key} className={activityStyles.entry}>
+                    <p className="m-0 break-words text-body-sm">
+                      <code>{view.key}</code> · {view.status}
+                    </p>
+                    {view.detail && detail(view.detail, view.status)}
+                  </li>
+                ))}
+                {recent.map((conversation) => {
+                  const view = views.get(conversation.key);
+                  return (
+                    <li key={conversation.key} className={activityStyles.entry}>
+                      <div className={activityStyles.row}>
+                        <div className={activityStyles.copy}>
+                          <ConversationName
+                            session={conversation}
+                            title={label(conversation)}
+                            className="text-label-sm"
+                          />
+                          <p className="m-0 text-body-sm text-subtle">
+                            {[
+                              conversation.root
+                                ? `Thread ${conversation.root.slice(0, 8)}`
+                                : "Channel",
+                              view?.status,
+                              conversation.at
+                                ? formatItemTimestamp(conversation.at / 1000, {
+                                    withTime: true,
+                                  })
+                                : undefined,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="subtle"
+                          size="sm"
+                          aria-label={`View transcript: ${label(conversation)}`}
+                          onClick={() => show(conversation)}
+                        >
+                          View transcript
+                        </Button>
+                      </div>
+                      {view?.detail && detail(view.detail, view.status)}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="m-0 text-body-sm text-subtle">
+                No other conversations saved in this app yet.
+              </p>
+            )}
+          </SettingsGroup>
+        </section>
+        {open && (
+          <PanelSubview
+            title={label(open)}
+            backLabel="Back to profile"
+            onBack={back}
+          >
+            <TranscriptView
+              key={open.key}
+              agent={agent}
+              conversation={open}
+              working={views.get(open.key)?.status === "Working"}
+            />
+          </PanelSubview>
+        )}
+      </div>
+    );
+  }
+
+  /** What the agent runs with. Saving applies to the next turn. */
+  function SettingsTab({
+    agent,
+    save,
+    settingsHost,
+    settingsSection,
+    settingsContent,
+  }: AgentViewProps<Config>) {
+    const form = useId();
+    const saved = readConfig(agent.config);
+    const [draft, setDraft] = useState(saved);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState("");
+    const saveErrorRef = useRef<HTMLParagraphElement>(null);
+    useEffect(() => {
+      if (error) saveErrorRef.current?.focus();
+    }, [error]);
+    const {
+      data,
+      error: catalogError,
+      checking,
+      defaults: providerDefaults,
+      check,
+      bound,
+      local,
+    } = useProvider(agent);
+    useEffect(() => {
+      if (local && agent.key) void provider.check();
+    }, [local, agent.key]);
+    const voiceSave = useRef<Config | undefined>(undefined);
+    const configRevision = useRef(0);
+    useEffect(() => {
+      const next = readConfig(agent.config);
+      configRevision.current++;
+      if (
+        voiceSave.current &&
+        JSON.stringify(next) === JSON.stringify(voiceSave.current)
+      ) {
+        setDraft((current) => voiceConfig(current, next.voice));
+        voiceSave.current = undefined;
+      } else setDraft(next);
+    }, [agent.config]);
+    // Inert in a build that recommends nothing for Codex.
+    const following = onRecommended(draft) && candidatesFor("codex").length > 0;
+    // A remote target runs Recommended on its own default.
+    const resolved = bound ? null : provider.recommended();
+    const effective = provider.resolve({ ...draft, effort: "" }, !!bound);
+    const selected = catalogModel(effective.model, data);
+    const efforts = thinkingOptions(
+      draft.effort,
+      effective.effort,
+      selected,
+      data,
+      true,
+    );
+    const configChanged = JSON.stringify(draft) !== JSON.stringify(saved);
+    const changed = configChanged || Boolean(settingsHost?.pendingSave);
+    const submit = async () => {
+      setSaving(true);
+      setError("");
+      try {
+        const settings = readConfig({
+          ...draft,
+          workspace: draft.workspace,
+        });
+        if (!validWorkspace(settings.workspace))
+          throw new Error("Enter an absolute or ~/… workspace path.");
+        // A verified execution target accepts custom model IDs. Its runtime
+        // checks the overrides against its own catalog when it starts a turn.
+        if (
+          !bound &&
+          settingsHost?.proposedModelOrEffort &&
+          (settings.model || settings.effort)
+        ) {
+          if (!data)
+            throw new Error(
+              "Check Codex models or clear the model and thinking overrides before saving.",
+            );
+          const model = catalogModel(provider.resolve(settings).model, data);
+          if (!model)
+            throw new Error(
+              "Choose an available Codex model or Codex default before saving.",
+            );
+          if (
+            settings.effort &&
+            !model.supportedReasoningEfforts.some(
+              (choice) => choice.reasoningEffort === settings.effort,
+            )
+          )
+            throw new Error(
+              "Choose a thinking level this Codex model supports or use Default.",
+            );
+        }
+        if (settingsHost?.proposedVoice && settings.voice) {
+          if (!data?.voices)
+            throw new Error(
+              "Check Huddle voices or choose Codex default before saving.",
+            );
+          if (!data.voices.includes(settings.voice))
+            throw new Error("Choose an available Huddle voice.");
+        }
+        // A Custom agent's save drops a mark left from before, which a later
+        // blank synced model would otherwise turn back on.
+        await save(
+          onRecommended(settings) ? settings : offRecommended(settings),
+        );
+      } catch (reason) {
+        setError(message(reason));
+      } finally {
+        setSaving(false);
+      }
+    };
+    const customization = (
+      <>
+        {catalogError && (
+          <div className="grid justify-items-start gap-2">
+            <p role="alert" className="m-0">
+              {catalogError}
+            </p>
+            <Button
+              variant="ghost"
+              disabled={checking}
+              focusableWhenDisabled
+              onClick={check}
+            >
+              Check again
+            </Button>
+          </div>
+        )}
+        <ModelPicker
+          allowCustomModel={!!bound}
+          models={choices(data)}
+          value={draft.model}
+          defaultModel={
+            bound
+              ? undefined
+              : catalogModel(providerDefaults.model, data)?.model
+          }
+          defaultLabel={
+            bound
+              ? "Codex default"
+              : providerDefaultLabel(providerDefaults.model, data)
+          }
+          {...(bound && {
+            defaultDescription: "Follows the target computer's settings",
+          })}
+          loading={checking}
+          disabled={saving}
+          // A manual choice, even of the default, is never Recommended.
+          onChange={(model) =>
+            setDraft(offRecommended({ ...draft, ...modelChange(model, data) }))
+          }
+        />
+        <Select
+          label="Thinking"
+          valueLabel={
+            draft.effort
+              ? undefined
+              : codexDefaultEffortLabel(effective.effort, selected)
+          }
+          valueSuffix={draft.effort ? undefined : " · Default"}
+          variant="preference"
+          value={draft.effort}
+          groups={[{ label: "", options: efforts }]}
+          disabled={checking || saving || !selected}
+          onValueChange={(effort) =>
+            setDraft(offRecommended({ ...draft, effort }))
+          }
+        />
+      </>
+    );
+    return (
+      <form
+        id={form}
+        className="grid gap-4 [container-type:inline-size]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        {error && (
+          <p
+            ref={saveErrorRef}
+            tabIndex={-1}
+            role="alert"
+            className="buzz-field-error"
+          >
+            {error}
+          </p>
+        )}
+        {settingsSection !== "runtime" && (
+          <>
+            <SettingsGroup>
+              {candidatesFor("codex").length ? (
+                <AISettings
+                  automatic={following}
+                  harnessIcon={CodexLogoIcon}
+                  disabled={saving}
+                  {...runsOnDetails(
+                    { title: "Codex", icon: CodexLogoIcon },
+                    resolved,
+                  )}
+                  onChange={(on) =>
+                    // Manual starts from the recommendation it ran on.
+                    setDraft(
+                      on
+                        ? readConfig(withRecommended(draft))
+                        : offRecommended(
+                            followRecommended(draft, draft, resolved),
+                          ),
+                    )
+                  }
+                >
+                  {settingsHost?.typeControl?.(configChanged)}
+                  {customization}
+                </AISettings>
+              ) : (
+                <>
+                  {settingsHost?.typeControl?.(configChanged)}
+                  {customization}
+                </>
+              )}
+              <CompactionField
+                value={draft.compactAt}
+                disabled={saving}
+                onChange={(value) => setDraft(withCompactAt(draft, value))}
+              />
+            </SettingsGroup>
+            <AgentInstructions
+              value={draft.instructions}
+              disabled={saving}
+              onChange={(instructions) => setDraft({ ...draft, instructions })}
+            />
+          </>
+        )}
+        {settingsSection !== "identity" && (
+          <>
+            <Field
+              label="Workspace"
+              description={
+                bound
+                  ? "The adapter selects a workspace for each conversation session."
+                  : "Codex starts here with full access to your files and network. Buzz tools run inside the app. Inherited MCP tools are disabled."
+              }
+            >
+              <Input
+                value={
+                  bound ? "Selected when the session starts" : draft.workspace
+                }
+                readOnly={!!bound}
+                placeholder="~/.buzz"
+                disabled={saving}
+                onValueChange={(workspace) => setDraft({ ...draft, workspace })}
+              />
+            </Field>
+            <Select
+              label="Session scope"
+              description="Choose how your agent uses sessions to keep context."
+              variant="preference"
+              value={draft.scope}
+              groups={SCOPES}
+              disabled={saving}
+              onValueChange={(value) =>
+                setDraft({
+                  ...draft,
+                  scope: sessionScope(value),
+                })
+              }
+            />
+            <VoicePreview
+              key={agent.key}
+              host={provider.previewHost}
+              previews={data?.previews}
+              accents={data?.accents}
+              voice={draft.voice ?? ""}
+              voices={
+                provider.snapshot().previewChecking
+                  ? undefined
+                  : data?.voices?.filter((voice) => !!data.previews?.[voice])
+              }
+              defaultVoice={data?.defaultVoice}
+              disabled={
+                saving || checking || !!provider.snapshot().voiceChecking
+              }
+              previewDisabled={!!bound}
+              previewLoading={provider.snapshot().previewChecking ?? false}
+              onCommit={async (voice) => {
+                if (settingsHost?.pendingSave) {
+                  setDraft(readConfig({ ...draft, voice }));
+                  return;
+                }
+                if (voice === (saved.voice ?? "")) return;
+                const next = voiceConfig(saved, voice);
+                voiceSave.current = next;
+                const revision = configRevision.current;
+                setError("");
+                setSaving(true);
+                try {
+                  await (agent.configBase
+                    ? save(next, { base: agent.configBase })
+                    : save(next));
+                  if (configRevision.current === revision)
+                    setDraft((current) => voiceConfig(current, voice));
+                } catch (reason) {
+                  // An unconfirmed write can still arrive through sync.
+                  setError(message(reason));
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              onShown={() => {
+                if (local) provider.check();
+              }}
+            />
+            {data &&
+              !data.voices &&
+              !checking &&
+              !provider.snapshot().voiceChecking && (
+                <div className="grid justify-items-start gap-2">
+                  <p role="status" className="m-0 text-body-sm text-subtle">
+                    Voice choices could not be checked. Try again, update Codex,
+                    or choose Codex default.
+                  </p>
+                  <Button variant="ghost" onClick={check}>
+                    Check voices again
+                  </Button>
+                </div>
+              )}
+            {!bound && (
+              <SwitchPreferenceRow
+                label="Codex apps and plugins"
+                description={
+                  agent.protection
+                    ? "Protected agents never use Codex apps or plugins."
+                    : "The agent may use apps and plugins that are installed in Codex."
+                }
+                checked={!!draft.apps && !agent.protection}
+                disabled={saving || !!agent.protection}
+                onCheckedChange={(checked) => {
+                  const { apps: _apps, ...rest } = draft;
+                  setDraft(checked ? { ...rest, apps: true } : rest);
+                }}
+              />
+            )}
+          </>
+        )}
+        {settingsHost?.proposedModelOrEffort &&
+          (draft.model || draft.effort) && (
+            <ClearModelOverrides
+              disabled={saving}
+              onClick={() =>
+                setDraft(offRecommended({ ...draft, model: "", effort: "" }))
+              }
+            />
+          )}
+        <AgentSaveButton form={form} saving={saving} disabled={!changed} />
+        {settingsSection !== "identity" && settingsContent}
+      </form>
+    );
+  }
+
+  return {
+    CreateModel,
+    CreateThinking,
+    Create,
+    ProviderDialogBody,
+    DefaultControl,
+    SettingsTab,
+    ActivityTab,
+  };
+}

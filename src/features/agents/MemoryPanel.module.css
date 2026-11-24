@@ -1,0 +1,27 @@
+@reference "../../shared/styles/globals.css";
+
+.plain {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.markdown {
+  @apply text-body text-standard;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.markdown :where(h1, h2, h3, h4, h5, h6) {
+  @apply text-label-sm;
+  margin: var(--space-4) 0 var(--space-2);
+}
+.markdown h1 {
+  @apply text-heading;
+}
+.markdown h2 {
+  @apply text-body-lg font-medium;
+}
+.markdown h3 {
+  @apply text-label;
+}
+.sectionHeader [class~="buzz-content-header"] {
+  margin-bottom: 0;
+}

@@ -1,0 +1,51 @@
+/* Solo OS first launch.
+   Only the Solo OS build marks anything with data-soloos-scope: OnboardingScreen's
+   card steps (Welcome, Create your key, Connect your workspace and the rest of
+   first run). Nothing else carries it, so every other build and everything after
+   first run keep Buzz's look, and this file changes nothing for them.
+
+   The colours are the Solo OS dashboard's own: warm off-white canvas and near-black
+   ink in light mode, a blue-black canvas with white actions in dark mode. Dark mode
+   swaps the neutral ramp; tokens.css lists [data-soloos-scope] on its two dark role
+   blocks so the roles re-resolve from these neutrals on those steps. The selectors
+   name `main` so they outrank those role blocks whatever the load order. */
+:root {
+  --soloos-canvas-light: #e9eae6;
+  --soloos-ink: #1c1a17;
+  --soloos-ink-hover: #2e2b27;
+  --soloos-ink-pressed: #0f0e0c;
+  --soloos-canvas-dark: #0e1116;
+  --soloos-white: #ffffff;
+  --soloos-white-hover: #e8e7e2;
+  --soloos-white-pressed: #d6d5cf;
+}
+
+:root:not([data-color-mode="dark"]) main[data-soloos-scope] {
+  --surface-onboarding: var(--soloos-canvas-light);
+  --affordance-prominent: var(--soloos-ink);
+  --affordance-prominent-hover: var(--soloos-ink-hover);
+  --affordance-prominent-pressed: var(--soloos-ink-pressed);
+  --text-on-prominent: var(--soloos-white);
+}
+
+:root[data-color-mode="dark"] main[data-soloos-scope] {
+  --neutral-1: #0e1116;
+  --neutral-2: #12161c;
+  --neutral-3: #161a21;
+  --neutral-4: #1c2129;
+  --neutral-5: #232934;
+  --neutral-6: #2a313c;
+  --neutral-7: #3a4250;
+  --neutral-8: #545d6c;
+  --neutral-9: #7a8391;
+  --neutral-10: #9aa2ae;
+  --neutral-11: #c4cad3;
+  --neutral-raised: #1c2129;
+  --neutral-quiet-hover: #232934;
+  --neutral-navigation-quiet: #1c2129;
+  --surface-onboarding: var(--soloos-canvas-dark);
+  --affordance-prominent: var(--soloos-white);
+  --affordance-prominent-hover: var(--soloos-white-hover);
+  --affordance-prominent-pressed: var(--soloos-white-pressed);
+  --text-on-prominent: var(--soloos-canvas-dark);
+}

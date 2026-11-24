@@ -1,0 +1,10 @@
+{
+  "id": "buzz.terminal",
+  "name": "Terminal",
+  "apiVersion": 1,
+  "description": "Open a native terminal for the current channel.",
+  "discovery": {
+    "category": "developer-tools-and-integrations",
+    "tags": ["code"]
+  }
+}

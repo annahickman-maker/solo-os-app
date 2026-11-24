@@ -1,0 +1,10 @@
+{
+  "id": "soloos.team",
+  "name": "Solo OS Team",
+  "apiVersion": 1,
+  "description": "Meet your Solo OS team and hire each employee with the access link from their lesson.",
+  "discovery": { "category": "agents" },
+  "host": {
+    "networkOrigins": ["https://solo-os-team.annahickman-maker.workers.dev"]
+  }
+}

@@ -1,0 +1,234 @@
+/* The Team page. Host tokens for everything the theme owns (text, surfaces,
+   borders, radii, spacing), so light and dark both follow the app. The Solo OS
+   palette (soloos.css) supplies the ink used for the order mark and Hired. */
+.root {
+  height: 100%;
+  min-height: 0;
+}
+.frame {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.content {
+  display: grid;
+  gap: var(--space-6);
+  width: 100%;
+  max-width: 68rem;
+  margin-inline: auto;
+  padding: var(--space-6) var(--space-4) var(--space-8);
+  box-sizing: border-box;
+}
+@media (min-width: 640px) {
+  .content {
+    padding-inline: var(--space-8);
+  }
+}
+.hero {
+  display: grid;
+  gap: var(--space-2);
+}
+.headline {
+  margin: 0;
+  font-size: 1.625rem;
+  line-height: 1.2;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.intro {
+  margin: 0;
+  max-width: 40rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.unlock,
+.harness {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 40rem;
+}
+.label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.unlockRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.unlockRow > :first-child {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.select {
+  justify-self: start;
+  min-width: 12rem;
+  padding: var(--space-1h) var(--space-3);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-control);
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  font: inherit;
+}
+.notice {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-card);
+  background: var(--surface-inset);
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.notice p {
+  margin: 0;
+}
+.notice[data-tone="error"] {
+  background: var(--surface-status-danger);
+  color: var(--text-danger);
+}
+.notice[data-tone="success"] {
+  background: var(--surface-status-success);
+  color: var(--text-success);
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card {
+  display: flex;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-panel);
+  background: var(--surface-panel);
+}
+.card[data-state="in_training"],
+.card[data-state="locked"] {
+  background: var(--surface-inset-subtle);
+}
+.portrait {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 4rem;
+  height: 4rem;
+  border-radius: 1rem;
+  overflow: hidden;
+  background: var(--surface-inset);
+  color: var(--text-primary);
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+.portrait img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.card[data-state="in_training"] .portrait {
+  opacity: 0.6;
+}
+.body {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.order {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border-radius: 999px;
+  background: var(--soloos-ink);
+  color: var(--soloos-white);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+:root[data-color-mode="dark"] .order {
+  background: var(--soloos-white);
+  color: var(--soloos-canvas-dark);
+}
+.name {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.badge {
+  flex: none;
+  padding: 0.0625rem var(--space-2);
+  border: 1px solid var(--border-standard);
+  border-radius: var(--radius-chip);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+.role {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+}
+.description {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+.action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.hired {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-capsule);
+  background: var(--surface-status-success);
+  color: var(--text-success);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.muted {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+}
+.footer {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-standard);
+  font-size: 0.875rem;
+}
+.footer a {
+  color: var(--text-link);
+}

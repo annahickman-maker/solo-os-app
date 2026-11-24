@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "com.soloos.app",
+  "productName": "Solo OS",
+  "build": {
+    "features": ["soloos"]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["soloos"]
+      }
+    }
+  },
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "copyright": "Solo OS. Built on Buzz by Block (Apache-2.0).",
+    "icon": [
+      "icons/solo-os/32x32.png",
+      "icons/solo-os/128x128.png",
+      "icons/solo-os/128x128@2x.png",
+      "icons/solo-os/icon.icns",
+      "icons/solo-os/icon.ico"
+    ]
+  }
+}

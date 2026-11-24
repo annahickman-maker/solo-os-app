@@ -1,0 +1,10 @@
+{
+  "id": "block.builderlab",
+  "name": "Builderlab",
+  "apiVersion": 1,
+  "description": "Host communities and agents with your Builderlab account.",
+  "discovery": {
+    "category": "agents",
+    "tags": ["Essentials", "builderlab"]
+  }
+}
